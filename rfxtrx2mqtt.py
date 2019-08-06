@@ -19,6 +19,30 @@ rfxtrx2mqtt_base_topic = "rfxtrx2mqtt"
 # Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
 homeassistant_discovery_topic_prefix = "homeassistant"
 
+known_devices = {}
+
+DEFAULT_CONFIG = {
+    "rfxtrx": {
+        "device": "/dev/tty.usbserial-A11Q57E2",
+    },
+
+    "mqtt": {
+        "broker_host": "localhost",
+        "broker_port": 1883,
+        "client_id": None,
+
+        "base_topic": "rfxtrx2mqtt",
+    },
+
+    "homeassistant": {
+        "discovery_prefix": "homeassistant",
+    },
+
+    "whitelisted_id_strings": [
+        ""
+    ],
+}
+
 
 def get_discovery_topic(component, device_id, sensor_id):
     assert component == "sensor", "rfxtrx2mqtt only supports sensor components yet"
@@ -58,19 +82,15 @@ def get_state_topic(component, device_id):
 # sent. This makes no sense to me, it seems very strange to
 # include the sensor values in the ID. So I won't replicate that
 # behavior in rfxtrx2mqtt.
-class DeviceID(namedtuple('DeviceID', ['packettype', 'subtype', 'id_string'])):
-    __slots__ = ()
-
-    def __str__(self):
-        return f"device_{self.packettype}_{self.subtype}_{self.id_string}"
-
-
-known_devices = {}
+def create_device_id(rfxtrx_device):
+    packettype = f"{rfxtrx_device.packettype:02x}"
+    subtype = f"{rfxtrx_device.subtype:02x}"
+    id_string = rfxtrx_device.id_string.replace(":", "")
+    return f"device_{packettype}_{subtype}_{id_string}"
 
 
 class Device:
     def __init__(self, *, device_id, rfxtrx_device, model, sensors):
-        #self.device_id = get_device_id(rfxtrx_device)
         self.device_id = device_id
         self.rfxtrx_device = rfxtrx_device
         self.model = model
@@ -94,7 +114,7 @@ class Sensor:
 
 def create_device_config(device):
     device_config = {
-        "name": f"rfxtrx_{device.device_id.id_string}",
+        "name": f"rfxtrx_{device.rfxtrx_device.id_string.replace(':', '')}",
         "identifiers": [f"rfxtrx2mqtt_{device.device_id}"],
         "sw_version": f"rfxtrx2mqtt {rfxtrx2mqtt_version}",
         "model": f"{device.model}",
@@ -106,7 +126,7 @@ def create_device_config(device):
 def create_sensor_config(device, sensor):
     component = "sensor"
     config = {
-        "name": f"rfxtrx_{device.device_id.id_string}_{sensor.sensor_id}",
+        "name": f"rfxtrx_{device.rfxtrx_device.id_string.replace(':', '')}_{sensor.sensor_id}",
         "device_class": f"{sensor.sensor_type}",
         "unit_of_measurement": f"{sensor.unit_of_measurement}",
         "state_topic": get_state_topic(component, device.device_id),
@@ -144,10 +164,7 @@ def get_sensors(event):
 
 
 def create_device(event):
-    device_id = DeviceID(
-        packettype=f"{event.device.packettype:02x}",
-        subtype=f"{event.device.subtype:02x}",
-        id_string=event.device.id_string.replace(":", ""))
+    device_id = create_device_id(event.device)
     sensors = get_sensors(event)
     device = Device(
         device_id=device_id,
@@ -162,10 +179,10 @@ async def send_discovery(client, device):
     for sensor_id, sensor in device.sensors.items():
         topic = get_discovery_topic(component, device.device_id, sensor_id)
         config = create_sensor_config(device, sensor)
-        log.info(f"Publishing discovery config '{config}' for device '{device.device_id}' on topic '{topic}'")
+        log.debug(f"Publishing discovery config '{config}' for device '{device.device_id}' on topic '{topic}'")
         msg = json.dumps(config)
         # todo: add retain flag (zigbee2mqtt does that, with qos=0)
-        await client.publish(topic, msg.encode('utf-8'))
+        await client.publish(topic, msg.encode("utf-8"))
 
 
 def event_values_to_state(values):
@@ -182,28 +199,28 @@ async def send_state(client, device_id, event):
     component = "sensor"
     topic = get_state_topic(component, device_id)
     state = event_values_to_state(event.values)
-    log.info(f"Publishing state '{state}' for device_id '{device_id}' on topic '{topic}'")
+    log.debug(f"Publishing state '{state}' for device_id '{device_id}' on topic '{topic}'")
     msg = json.dumps(state)
-    await client.publish(topic, msg.encode('utf-8'))
+    await client.publish(topic, msg.encode("utf-8"))
 
 
 async def handle_event(event, mqtt_client):
     try:
         log.debug(f"Got event {event.__dict__}) from device {event.device.__dict__}")
         if not isinstance(event, RFXtrx.SensorEvent):
-            log.info(f"Ignoring event, not a sensor event: {event}")
+            log.info(f"Ignoring event, not a sensor event! Event: {event}")
             return
 
         device = create_device(event)
         log.info(f"Device with ID '{device.device_id}' ({device.model}) sent sensor values: {event.values}")
 
         if device.device_id not in known_devices:
+            log.info(f"Found new device: id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}'), device ID: {device.device_id}")
             known_devices[device.device_id] = device
             await send_discovery(mqtt_client, device)
 
         state = event_values_to_state(event.values)
         await send_state(mqtt_client, device.device_id, event)
-        print("")
     except Exception:
         log.exception("Exception in handle_event")
 
@@ -223,7 +240,7 @@ async def shutdown(signal, loop):
 
 
 def setup_rfxtrx(loop, mqtt_client, debug):
-    rfxtrx_device = '/dev/tty.usbserial-A11Q57E2'
+    rfxtrx_device = "/dev/tty.usbserial-A11Q57E2"
 
     def rfxtrx_event_callback(event):
         asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client), loop)
@@ -242,7 +259,7 @@ async def run(args):
     loop = asyncio.get_running_loop()
     try:
         mqtt_client = MQTTClient(client_id="rfxtrx2mqtt")
-        ret = await mqtt_client.connect('mqtt://localhost:1883/', cleansession=True)
+        ret = await mqtt_client.connect("mqtt://localhost:1883/", cleansession=True)
     except ConnectException as ce:
         log.error("Connection failed: %s" % ce)
         # todo: do what?
@@ -263,9 +280,15 @@ async def run(args):
     await mqtt_client.disconnect()
 
 
+def read_config():
+    # TODO: Read config file
+    return DEFAULT_CONFIG
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--config", help="Config file")
     args = parser.parse_args()
     return args
 
@@ -284,5 +307,5 @@ def main():
     log.info("Exiting rfxtrx2mqtt")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
