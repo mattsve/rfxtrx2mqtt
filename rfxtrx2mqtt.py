@@ -200,7 +200,7 @@ def create_device(event):
     return device
 
 
-async def send_discovery(client, device):
+async def publish_discovery(client, device):
     component = "sensor"
     for sensor_id, sensor in device.sensors.items():
         topic = get_discovery_topic(component, device.device_id, sensor_id)
@@ -221,7 +221,7 @@ def event_values_to_state(values):
     return state
 
 
-async def send_state(client, device_id, event):
+async def publish_state(client, device_id, event):
     component = "sensor"
     topic = get_state_topic(component, device_id)
     state = event_values_to_state(event.values)
@@ -240,7 +240,9 @@ async def handle_event(event, mqtt_client, config):
         device = create_device(event)
 
         whitelisted_device_ids = [ w["device_id"] for w in config["whitelist"] ]
-        if device.device_id in whitelisted_device_ids:
+        if not config["whitelist"]:
+            is_whitelisted = True
+        elif device.device_id in whitelisted_device_ids:
             is_whitelisted = True
         else:
             is_whitelisted = False
@@ -249,22 +251,20 @@ async def handle_event(event, mqtt_client, config):
         if device.device_id not in seen_devices:
             log.info(f"Found new device: Device ID: {device.device_id}, packettype '{device.rfxtrx_device.packettype:02x}', subtype: '{device.rfxtrx_device.subtype:02x}', id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}', whitelisted: {is_whitelisted}")
             seen_devices[device.device_id] = device
+            if is_whitelisted:
+                await publish_discovery(mqtt_client, device)
+            else:
+                log.debug(f"Device ID {device.device_id} not whitelisted, not publishing discovery config")
 
         seen_devices_last_values[device.device_id] = event.values
         seen_devices_last_timestamp[device.device_id] = time.time()
 
-
         # Whitelist is not enabled if it's empty
-        if config["whitelist"]:
-            if device.device_id not in whitelisted_device_ids:
-                log.debug(f"Ignoring event from not whitelisted device ID: {device.device_id}")
-                return
-
-        if device.device_id not in seen_devices:
-            await send_discovery(mqtt_client, device)
-
-        state = event_values_to_state(event.values)
-        await send_state(mqtt_client, device.device_id, event)
+        if is_whitelisted:
+            state = event_values_to_state(event.values)
+            await publish_state(mqtt_client, device.device_id, event)
+        else:
+            log.debug(f"Device ID {device.device_id} not whitelisted, not publishing event state")
     except Exception:
         log.exception("Exception in handle_event")
 
@@ -304,7 +304,8 @@ def log_seen_devices(config):
 
     log.info(f"Seen devices ({len(seen_devices)})")
     log.info("----------------------------------------")
-    for device in seen_devices.values():
+    for device_id in sorted(seen_devices.keys()):
+        device = seen_devices[device_id]
         if device.device_id in whitelisted_device_ids:
             is_whitelisted = True
         else:
