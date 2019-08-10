@@ -1,9 +1,11 @@
 from collections import namedtuple
 import argparse
 import asyncio
+import datetime
 import json
 import logging
 import signal
+import time
 
 import RFXtrx
 from hbmqtt.client import MQTTClient, ConnectException
@@ -19,7 +21,9 @@ rfxtrx2mqtt_base_topic = "rfxtrx2mqtt"
 # Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
 homeassistant_discovery_topic_prefix = "homeassistant"
 
-known_devices = {}
+seen_devices = {}
+seen_devices_last_values = {}
+seen_devices_last_timestamp = {}
 
 DEFAULT_CONFIG = {
     "rfxtrx": {
@@ -38,9 +42,31 @@ DEFAULT_CONFIG = {
         "discovery_prefix": "homeassistant",
     },
 
-    "whitelisted_id_strings": [
-        ""
+    "whitelist": [
+        { "device_id": "50_02_6501" }, # Capidi RAR801
+        { "device_id": "52_09_7100" },
+        { "device_id": "52_09_8700" },
+        { "device_id": "52_09_9700" }, # The one from Loh Electronics? (doesn't sent as often)
+        { "device_id": "52_09_a700" },
+        { "device_id": "52_09_f700" },
     ],
+}
+
+
+event_value_key_to_sensor_id_map = {
+    "Temperature": "temperature",
+    "Temperature2": "temperature_2",
+    "Humidity": "humidity",
+    "Battery numeric": "battery",
+    "Rssi numeric": "rssi",
+}
+
+event_value_key_to_sensor_type_map = {
+    "Temperature": "temperature",
+    "Temperature2": "temperature",
+    "Humidity": "humidity",
+    "Battery numeric": "battery_numeric",
+    "Rssi numeric": "rssi_numeric",
 }
 
 
@@ -86,7 +112,7 @@ def create_device_id(rfxtrx_device):
     packettype = f"{rfxtrx_device.packettype:02x}"
     subtype = f"{rfxtrx_device.subtype:02x}"
     id_string = rfxtrx_device.id_string.replace(":", "")
-    return f"device_{packettype}_{subtype}_{id_string}"
+    return f"{packettype}_{subtype}_{id_string}"
 
 
 class Device:
@@ -103,13 +129,20 @@ class Sensor:
         self.sensor_id = sensor_id
 
         # https://developers.home-assistant.io/docs/en/entity_sensor.html
-        # sensor_type = device_class
-        assert sensor_type in ("temperature", "humidity")
+        # device_class is derived from sensor_type, but not all
+        # sensor_type:s are valid device_classes (HA does not have a
+        # "battery numeric" or "rssi numeric" device class.
+        assert sensor_type in event_value_key_to_sensor_type_map.values()
+
         self.sensor_type = sensor_type
         if sensor_type == "temperature":
             self.unit_of_measurement = "°C"
         elif sensor_type == "humidity":
             self.unit_of_measurement = "%"
+        elif sensor_type == "battery_numeric":
+            self.unit_of_measurement = None
+        elif sensor_type == "rssi_numeric":
+            self.unit_of_measurement = None
 
 
 def create_device_config(device):
@@ -127,27 +160,20 @@ def create_sensor_config(device, sensor):
     component = "sensor"
     config = {
         "name": f"rfxtrx_{device.rfxtrx_device.id_string.replace(':', '')}_{sensor.sensor_id}",
-        "device_class": f"{sensor.sensor_type}",
-        "unit_of_measurement": f"{sensor.unit_of_measurement}",
         "state_topic": get_state_topic(component, device.device_id),
         "value_template": f"{{{{ value_json.{sensor.sensor_id} }}}}",
         "unique_id": f"rfxtrx2mqtt_{device.device_id}_{sensor.sensor_id}",
         "device": create_device_config(device),
     }
+
+    if sensor.unit_of_measurement:
+        config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
+
+    # Only temperature and humidity have correct device classes in Home Assistant.
+    if sensor.sensor_type in ("temperature", "humidity"):
+        config["device_class"] = f"{sensor.sensor_type}"
+
     return config
-
-
-event_value_key_to_sensor_id_map = {
-    "Temperature": "temperature",
-    "Temperature2": "temperature_2",
-    "Humidity": "humidity",
-}
-
-event_value_key_to_sensor_type_map = {
-    "Temperature": "temperature",
-    "Temperature2": "temperature",
-    "Humidity": "humidity",
-}
 
 
 def get_sensors(event):
@@ -204,7 +230,7 @@ async def send_state(client, device_id, event):
     await client.publish(topic, msg.encode("utf-8"))
 
 
-async def handle_event(event, mqtt_client):
+async def handle_event(event, mqtt_client, config):
     try:
         log.debug(f"Got event {event.__dict__}) from device {event.device.__dict__}")
         if not isinstance(event, RFXtrx.SensorEvent):
@@ -212,11 +238,29 @@ async def handle_event(event, mqtt_client):
             return
 
         device = create_device(event)
-        log.info(f"Device with ID '{device.device_id}' ({device.model}) sent sensor values: {event.values}")
 
-        if device.device_id not in known_devices:
-            log.info(f"Found new device: id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}'), device ID: {device.device_id}")
-            known_devices[device.device_id] = device
+        whitelisted_device_ids = [ w["device_id"] for w in config["whitelist"] ]
+        if device.device_id in whitelisted_device_ids:
+            is_whitelisted = True
+        else:
+            is_whitelisted = False
+
+        log.info(f"Event: Device with ID '{device.device_id}' (whitelisted: {is_whitelisted}) sent sensor values: {event.values}")
+        if device.device_id not in seen_devices:
+            log.info(f"Found new device: Device ID: {device.device_id}, packettype '{device.rfxtrx_device.packettype:02x}', subtype: '{device.rfxtrx_device.subtype:02x}', id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}', whitelisted: {is_whitelisted}")
+            seen_devices[device.device_id] = device
+
+        seen_devices_last_values[device.device_id] = event.values
+        seen_devices_last_timestamp[device.device_id] = time.time()
+
+
+        # Whitelist is not enabled if it's empty
+        if config["whitelist"]:
+            if device.device_id not in whitelisted_device_ids:
+                log.debug(f"Ignoring event from not whitelisted device ID: {device.device_id}")
+                return
+
+        if device.device_id not in seen_devices:
             await send_discovery(mqtt_client, device)
 
         state = event_values_to_state(event.values)
@@ -239,11 +283,11 @@ async def shutdown(signal, loop):
     loop.stop()
 
 
-def setup_rfxtrx(loop, mqtt_client, debug):
-    rfxtrx_device = "/dev/tty.usbserial-A11Q57E2"
+def setup_rfxtrx(config, loop, mqtt_client, debug):
+    rfxtrx_device = config["rfxtrx"]["device"]
 
     def rfxtrx_event_callback(event):
-        asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client), loop)
+        asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client, config), loop)
 
     log.info(f"Using RFXtrx device '{rfxtrx_device}'")
     rfxtrx_conn = RFXtrx.Connect(rfxtrx_device, rfxtrx_event_callback, debug=debug)
@@ -255,7 +299,30 @@ def shutdown_rfxtrx(rfxtrx_conn):
     rfxtrx_conn.close_connection()
 
 
+def log_seen_devices(config):
+    whitelisted_device_ids = [ w["device_id"] for w in config["whitelist"] ]
+
+    log.info(f"Seen devices ({len(seen_devices)})")
+    log.info("----------------------------------------")
+    for device in seen_devices.values():
+        if device.device_id in whitelisted_device_ids:
+            is_whitelisted = True
+        else:
+            is_whitelisted = False
+        log.info(f" * Device ID: {device.device_id}\n"
+                 f"   packettype: {device.rfxtrx_device.packettype:02x}\n"
+                 f"   subtype: {device.rfxtrx_device.subtype:02x}\n"
+                 f"   id_string: {device.rfxtrx_device.id_string}\n"
+                 f"   type_string: {device.rfxtrx_device.type_string}\n"
+                 f"   last values: {seen_devices_last_values[device.device_id]}\n"
+                 f"   whitelisted: {is_whitelisted}\n"
+                 f"   last seen: {datetime.datetime.utcfromtimestamp(seen_devices_last_timestamp[device.device_id]).strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info("----------------------------------------")
+
 async def run(args):
+    config = read_config()
+    log.info(f"Using config: {config}")
+
     loop = asyncio.get_running_loop()
     try:
         mqtt_client = MQTTClient(client_id="rfxtrx2mqtt")
@@ -266,13 +333,13 @@ async def run(args):
         return
 
     rfxtrx_conn = await loop.run_in_executor(
-        None, setup_rfxtrx, loop, mqtt_client, args.debug)
-
-    await asyncio.sleep(1.0)
+        None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
 
     try:
         while True:
-            await asyncio.sleep(1.0)
+            log_seen_devices(config)
+            await asyncio.sleep(60.0)
+
     except asyncio.CancelledError:
         pass
 
