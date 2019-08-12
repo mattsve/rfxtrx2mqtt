@@ -1,25 +1,26 @@
-from collections import namedtuple
 import argparse
 import asyncio
+import collections
+import collections.abc
+import copy
 import datetime
 import json
 import logging
 import signal
+import sys
 import time
+from pathlib import Path
 
 import RFXtrx
 from hbmqtt.client import MQTTClient, ConnectException
 from hbmqtt.mqtt.constants import QOS_0, QOS_1, QOS_2
 from hbmqtt.errors import HBMQTTException
+import yaml
 
 
 log = logging.getLogger("rfxtrx2mqtt")
 
 rfxtrx2mqtt_version = "0.0.1"
-rfxtrx2mqtt_base_topic = "rfxtrx2mqtt"
-
-# Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
-homeassistant_discovery_topic_prefix = "homeassistant"
 
 seen_devices = {}
 seen_devices_last_values = {}
@@ -27,29 +28,36 @@ seen_devices_last_timestamp = {}
 
 DEFAULT_CONFIG = {
     "rfxtrx": {
-        "device": "/dev/tty.usbserial-A11Q57E2",
+        "device": None,
     },
 
     "mqtt": {
         "broker_host": "localhost",
         "broker_port": 1883,
-        "client_id": None,
+        "client_id": "rfxtrx2mqtt",
 
         "base_topic": "rfxtrx2mqtt",
     },
 
     "homeassistant": {
+        # Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
         "discovery_prefix": "homeassistant",
     },
 
     "whitelist": [
-        { "device_id": "50_02_6501" }, # Capidi RAR801
-        { "device_id": "52_09_7100" },
-        { "device_id": "52_09_8700" },
-        { "device_id": "52_09_9700" }, # The one from Loh Electronics? (doesn't sent as often)
-        { "device_id": "52_09_a700" },
-        { "device_id": "52_09_f700" },
+        # Example:
+        #
+        #   { "device_id": "5209_9700" }
     ],
+
+    "device_name_map": {
+    },
+
+    "sensor_name_map": {
+        # Example:
+        #
+        #   "5002_6501": "outdoor_north",
+    }
 }
 
 
@@ -70,16 +78,16 @@ event_value_key_to_sensor_type_map = {
 }
 
 
-def get_discovery_topic(component, device_id, sensor_id):
+def get_discovery_topic(component, device_id, sensor_id, config):
     assert component == "sensor", "rfxtrx2mqtt only supports sensor components yet"
     # Sensor ID is the same as object_id in the HA mqtt discovery topic format.
-    discovery_topic = f"{homeassistant_discovery_topic_prefix}/{component}/{device_id}/{sensor_id}/config"
+    discovery_topic = f"{config['homeassistant']['discovery_prefix']}/{component}/{device_id}/{sensor_id}/config"
     return discovery_topic
 
 
-def get_state_topic(component, device_id):
+def get_state_topic(component, device_id, config):
     assert component == "sensor", "rfxtrx2mqtt only supports sensor components yet"
-    state_topic = f"{rfxtrx2mqtt_base_topic}/{component}/{device_id}/state"
+    state_topic = f"{config['mqtt']['base_topic']}/{component}/{device_id}/state"
     return state_topic
 
 
@@ -112,7 +120,7 @@ def create_device_id(rfxtrx_device):
     packettype = f"{rfxtrx_device.packettype:02x}"
     subtype = f"{rfxtrx_device.subtype:02x}"
     id_string = rfxtrx_device.id_string.replace(":", "")
-    return f"{packettype}_{subtype}_{id_string}"
+    return f"{packettype}{subtype}_{id_string}"
 
 
 class Device:
@@ -145,10 +153,19 @@ class Sensor:
             self.unit_of_measurement = None
 
 
-def create_device_config(device):
+def get_device_name(device, config):
+    return config["device_name_map"].get(device.device_id, f"rfxtrx_{device.device_id}")
+
+
+def get_sensor_name(device, sensor, config):
+    device_prefix = config["sensor_name_map"].get(device.device_id, f"rfxtrx_{device.device_id}")
+    return f"{device_prefix}_{sensor.sensor_id}"
+
+
+def create_device_config(device, config):
     device_config = {
-        "name": f"rfxtrx_{device.rfxtrx_device.id_string.replace(':', '')}",
-        "identifiers": [f"rfxtrx2mqtt_{device.device_id}"],
+        "name": get_device_name(device, config),
+        "identifiers": [f"rfxtrx2mqtt", f"{device.device_id}"],
         "sw_version": f"rfxtrx2mqtt {rfxtrx2mqtt_version}",
         "model": f"{device.model}",
         "manufacturer": f"rfxtrx2mqtt",
@@ -156,24 +173,24 @@ def create_device_config(device):
     return device_config
 
 
-def create_sensor_config(device, sensor):
+def create_sensor_config(device, sensor, config):
     component = "sensor"
-    config = {
-        "name": f"rfxtrx_{device.rfxtrx_device.id_string.replace(':', '')}_{sensor.sensor_id}",
-        "state_topic": get_state_topic(component, device.device_id),
+    sensor_config = {
+        "name": get_sensor_name(device, sensor, config),
+        "state_topic": get_state_topic(component, device.device_id, config),
         "value_template": f"{{{{ value_json.{sensor.sensor_id} }}}}",
         "unique_id": f"rfxtrx2mqtt_{device.device_id}_{sensor.sensor_id}",
-        "device": create_device_config(device),
+        "device": create_device_config(device, config),
     }
 
     if sensor.unit_of_measurement:
-        config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
+        sensor_config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
 
     # Only temperature and humidity have correct device classes in Home Assistant.
     if sensor.sensor_type in ("temperature", "humidity"):
-        config["device_class"] = f"{sensor.sensor_type}"
+        sensor_config["device_class"] = f"{sensor.sensor_type}"
 
-    return config
+    return sensor_config
 
 
 def get_sensors(event):
@@ -200,13 +217,13 @@ def create_device(event):
     return device
 
 
-async def publish_discovery(client, device):
+async def publish_discovery(client, device, config):
     component = "sensor"
     for sensor_id, sensor in device.sensors.items():
-        topic = get_discovery_topic(component, device.device_id, sensor_id)
-        config = create_sensor_config(device, sensor)
-        log.debug(f"Publishing discovery config '{config}' for device '{device.device_id}' on topic '{topic}'")
-        msg = json.dumps(config)
+        topic = get_discovery_topic(component, device.device_id, sensor_id, config)
+        sensor_config = create_sensor_config(device, sensor, config)
+        log.debug(f"Publishing discovery config '{sensor_config}' for device '{device.device_id}' on topic '{topic}'")
+        msg = json.dumps(sensor_config)
         # todo: add retain flag (zigbee2mqtt does that, with qos=0)
         await client.publish(topic, msg.encode("utf-8"))
 
@@ -252,7 +269,7 @@ async def handle_event(event, mqtt_client, config):
             log.info(f"Found new device: Device ID: {device.device_id}, packettype '{device.rfxtrx_device.packettype:02x}', subtype: '{device.rfxtrx_device.subtype:02x}', id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}', whitelisted: {is_whitelisted}")
             seen_devices[device.device_id] = device
             if is_whitelisted:
-                await publish_discovery(mqtt_client, device)
+                await publish_discovery(mqtt_client, device, config)
             else:
                 log.debug(f"Device ID {device.device_id} not whitelisted, not publishing discovery config")
 
@@ -267,36 +284,6 @@ async def handle_event(event, mqtt_client, config):
             log.debug(f"Device ID {device.device_id} not whitelisted, not publishing event state")
     except Exception:
         log.exception("Exception in handle_event")
-
-
-async def shutdown(signal, loop):
-    """Cleanup tasks tied to the service's shutdown."""
-    logging.info(f"Received exit signal {signal.name}...")
-    tasks = [t for t in asyncio.all_tasks() if t is not
-             asyncio.current_task()]
-
-    [task.cancel() for task in tasks]
-
-    logging.info(f"Cancelling {len(tasks)} outstanding tasks")
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logging.info(f"Flushing metrics")
-    loop.stop()
-
-
-def setup_rfxtrx(config, loop, mqtt_client, debug):
-    rfxtrx_device = config["rfxtrx"]["device"]
-
-    def rfxtrx_event_callback(event):
-        asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client, config), loop)
-
-    log.info(f"Using RFXtrx device '{rfxtrx_device}'")
-    rfxtrx_conn = RFXtrx.Connect(rfxtrx_device, rfxtrx_event_callback, debug=debug)
-    return rfxtrx_conn
-
-
-def shutdown_rfxtrx(rfxtrx_conn):
-    log.info("Shutting down RFXtrx")
-    rfxtrx_conn.close_connection()
 
 
 def log_seen_devices(config):
@@ -320,18 +307,55 @@ def log_seen_devices(config):
                  f"   last seen: {datetime.datetime.utcfromtimestamp(seen_devices_last_timestamp[device.device_id]).strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("----------------------------------------")
 
+
+async def shutdown(signal, loop):
+    """Cleanup tasks tied to the service's shutdown."""
+    logging.info(f"Received exit signal {signal.name}...")
+    tasks = [t for t in asyncio.all_tasks() if t is not
+             asyncio.current_task()]
+
+    [task.cancel() for task in tasks]
+
+    logging.info(f"Cancelling {len(tasks)} outstanding tasks")
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
+
+
+def setup_rfxtrx(config, loop, mqtt_client, debug):
+    rfxtrx_device = config["rfxtrx"]["device"]
+
+    def rfxtrx_event_callback(event):
+        asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client, config), loop)
+
+    log.info(f"Using RFXtrx device '{rfxtrx_device}'")
+    rfxtrx_conn = RFXtrx.Connect(rfxtrx_device, rfxtrx_event_callback, debug=debug)
+    return rfxtrx_conn
+
+
+def shutdown_rfxtrx(rfxtrx_conn):
+    log.info("Shutting down RFXtrx")
+    rfxtrx_conn.close_connection()
+
+
 async def run(args):
-    config = read_config()
-    log.info(f"Using config: {config}")
+    config = read_config(args)
+    log.info(f"Using config:\n{json.dumps(config, indent=2, sort_keys=True)}")
+
+    # Some config validation
+    if config["rfxtrx"]["device"] is None:
+        log.error("No RFXtrx device specified")
+        sys.exit(1)
 
     loop = asyncio.get_running_loop()
     try:
-        mqtt_client = MQTTClient(client_id="rfxtrx2mqtt")
-        ret = await mqtt_client.connect("mqtt://localhost:1883/", cleansession=True)
+        mqtt_client = MQTTClient(client_id=config["mqtt"]["client_id"])
+        ret = await mqtt_client.connect(
+            f"mqtt://{config['mqtt']['broker_host']}:{config['mqtt']['broker_port']}/",
+            cleansession=True)
     except ConnectException as ce:
         log.error("Connection failed: %s" % ce)
         # todo: do what?
-        return
+        sys.exit(1)
 
     rfxtrx_conn = await loop.run_in_executor(
         None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
@@ -340,7 +364,6 @@ async def run(args):
         while True:
             log_seen_devices(config)
             await asyncio.sleep(60.0)
-
     except asyncio.CancelledError:
         pass
 
@@ -348,15 +371,66 @@ async def run(args):
     await mqtt_client.disconnect()
 
 
-def read_config():
-    # TODO: Read config file
-    return DEFAULT_CONFIG
+# https://stackoverflow.com/a/46020972
+def deep_dict_merge(dct1, dct2, override=True) -> dict:
+    """
+    :param dct1: First dict to merge
+    :param dct2: Second dict to merge
+    :param override: if same key exists in both dictionaries, should override? otherwise ignore. (default=True)
+    :return: The merge dictionary
+    """
+    merged = copy.deepcopy(dct1)
+    for k, v2 in dct2.items():
+        if k in merged:
+            v1 = merged[k]
+            if isinstance(v1, dict) and isinstance(v2, collections.abc.Mapping):
+                merged[k] = deep_dict_merge(v1, v2, override)
+            elif isinstance(v1, list) and isinstance(v2, list):
+                merged[k] = v1 + v2
+            else:
+                if override:
+                    merged[k] = copy.deepcopy(v2)
+        else:
+            merged[k] = copy.deepcopy(v2)
+    return merged
+
+
+def read_config(args):
+    config = {}
+    config = deep_dict_merge(config, DEFAULT_CONFIG)
+
+    if args.config_file:
+        with open(args.config_file) as f:
+            file_config = yaml.safe_load(f)
+            config = deep_dict_merge(config, file_config)
+
+    config = deep_dict_merge(config, args_to_config(args))
+
+    # Important: All possible options must be expressed in the default
+    # config dict, as usage of the config dict assumes the keys
+    # exist. This is currently the case because DEFAULT_CONFIG has all
+    # options, but that doesn't feel solid.
+    return config
+
+
+def args_to_config(args):
+    # Note that not all args are expressed in the config (for example,
+    # --config-file).
+
+    args_config = collections.defaultdict(dict)
+    if args.rfxtrx_device:
+        args_config["rfxtrx"]["device"] = args.rfxtrx_device
+
+    return args_config
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--config", help="Config file")
+    parser.add_argument("--config-file", help="Config file")
+
+    parser.add_argument("--rfxtrx-device", help="RFXtrx device")
+
     args = parser.parse_args()
     return args
 

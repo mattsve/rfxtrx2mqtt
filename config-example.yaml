@@ -1,0 +1,22 @@
+rfxtrx:
+  device: "/dev/tty.usbserial-A11Q57E2"
+
+mqtt:
+  broker_host: localhost
+  broker_port: 1883
+
+whitelist:
+  - device_id: "5002_6501" # Capidi RAR801 (utomhus, på norra husväggen)
+  - device_id: "5209_7100" # Loh Electronics (garaget)
+  - device_id: "5209_8700" # Telldus (ch1) (utomhus, utanför tvättstugan)
+  - device_id: "5209_9700" # ???
+  - device_id: "5209_a700" # ???
+  - device_id: "5209_b700" # Telldus (ch4) (vardagsrummet)
+  - device_id: "5209_f700" # Telldus (ch8) (sovrummet)
+
+device_name_map: {}
+
+sensor_name_map: {}
+  #"5002_6501": "outdoor_north"
+  #"5209_7100": "garage"
+  #"5209_8700": "outdoor_west"
