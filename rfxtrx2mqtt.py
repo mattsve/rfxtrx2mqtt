@@ -13,7 +13,7 @@ from pathlib import Path
 
 import RFXtrx
 from hbmqtt.client import MQTTClient, ConnectException
-from hbmqtt.mqtt.constants import QOS_0, QOS_1, QOS_2
+from hbmqtt.mqtt.constants import QOS_0
 from hbmqtt.errors import HBMQTTException
 import yaml
 
@@ -224,8 +224,8 @@ async def publish_discovery(client, device, config):
         sensor_config = create_sensor_config(device, sensor, config)
         log.debug(f"Publishing discovery config '{sensor_config}' for device '{device.device_id}' on topic '{topic}'")
         msg = json.dumps(sensor_config)
-        # todo: add retain flag (zigbee2mqtt does that, with qos=0)
-        await client.publish(topic, msg.encode("utf-8"))
+        # (retain and qos=0 is what zigbee2mqtt does)
+        await client.publish(topic, msg.encode("utf-8"), retain=True, qos=QOS_0)
 
 
 def event_values_to_state(values):
