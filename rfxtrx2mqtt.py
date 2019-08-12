@@ -225,6 +225,12 @@ async def publish_discovery(client, device, config):
         log.debug(f"Publishing discovery config '{sensor_config}' for device '{device.device_id}' on topic '{topic}'")
         msg = json.dumps(sensor_config)
         # (retain and qos=0 is what zigbee2mqtt does)
+        #
+        # FIXME: The downside is that when experimenting with the
+        # setup, rfxtrx2mqtt might send discovery configs that you
+        # don't want to use later, but those will be retained
+        # anyway. (I think that restarting the MQTT broker will drop
+        # the retained messages.)
         await client.publish(topic, msg.encode("utf-8"), retain=True, qos=QOS_0)
 
 
@@ -238,9 +244,9 @@ def event_values_to_state(values):
     return state
 
 
-async def publish_state(client, device_id, event):
+async def publish_state(client, device_id, event, config):
     component = "sensor"
-    topic = get_state_topic(component, device_id)
+    topic = get_state_topic(component, device_id, config)
     state = event_values_to_state(event.values)
     log.debug(f"Publishing state '{state}' for device_id '{device_id}' on topic '{topic}'")
     msg = json.dumps(state)
@@ -279,7 +285,7 @@ async def handle_event(event, mqtt_client, config):
         # Whitelist is not enabled if it's empty
         if is_whitelisted:
             state = event_values_to_state(event.values)
-            await publish_state(mqtt_client, device.device_id, event)
+            await publish_state(mqtt_client, device.device_id, event, config)
         else:
             log.debug(f"Device ID {device.device_id} not whitelisted, not publishing event state")
     except Exception:
