@@ -165,7 +165,7 @@ def get_sensor_name(device, sensor, config):
 def create_device_config(device, config):
     device_config = {
         "name": get_device_name(device, config),
-        "identifiers": [f"rfxtrx2mqtt", f"{device.device_id}"],
+        "identifiers": [f"rfxtrx2mqtt_{device.device_id}"],
         "sw_version": f"rfxtrx2mqtt {rfxtrx2mqtt_version}",
         "model": f"{device.model}",
         "manufacturer": f"rfxtrx2mqtt",
