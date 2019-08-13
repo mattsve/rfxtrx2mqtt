@@ -40,8 +40,12 @@ DEFAULT_CONFIG = {
     },
 
     "homeassistant": {
-        # Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
         "discovery_prefix": "homeassistant",
+
+        "rfxtrx_device_id_prefix": "rfxtrx2mqtt_rfxtrx_",
+        "rfxtrx_device_name_prefix": "rfxtrx_",
+
+        "rfxtrx2mqtt_device_id": "rfxtrx2mqtt",
     },
 
     "whitelist": [
@@ -80,7 +84,8 @@ event_value_key_to_sensor_type_map = {
 
 def get_discovery_topic(component, device_id, sensor_id, config):
     assert component == "sensor", "rfxtrx2mqtt only supports sensor components yet"
-    # Sensor ID is the same as object_id in the HA mqtt discovery topic format.
+    # Sensor ID is the same as object_id in the Home Assistant MQTT discovery topic format.
+    # Discovery topic format: <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
     discovery_topic = f"{config['homeassistant']['discovery_prefix']}/{component}/{device_id}/{sensor_id}/config"
     return discovery_topic
 
@@ -116,18 +121,20 @@ def get_state_topic(component, device_id, config):
 # sent. This makes no sense to me, it seems very strange to
 # include the sensor values in the ID. So I won't replicate that
 # behavior in rfxtrx2mqtt.
-def create_device_id(rfxtrx_device):
-    packettype = f"{rfxtrx_device.packettype:02x}"
-    subtype = f"{rfxtrx_device.subtype:02x}"
-    id_string = rfxtrx_device.id_string.replace(":", "")
+def create_device_id(pyrfxtrx_device):
+    packettype = f"{pyrfxtrx_device.packettype:02x}"
+    subtype = f"{pyrfxtrx_device.subtype:02x}"
+    id_string = pyrfxtrx_device.id_string.replace(":", "")
     return f"{packettype}{subtype}_{id_string}"
 
 
 class Device:
-    def __init__(self, *, device_id, rfxtrx_device, model, sensors):
+    def __init__(self, *, device_id, packettype, subtype, id_string, type_string, sensors):
         self.device_id = device_id
-        self.rfxtrx_device = rfxtrx_device
-        self.model = model
+        self.packettype = packettype
+        self.subtype = subtype
+        self.id_string = id_string
+        self.type_string = type_string
         self.sensors = sensors
 
 
@@ -153,46 +160,6 @@ class Sensor:
             self.unit_of_measurement = None
 
 
-def get_device_name(device, config):
-    return config["device_name_map"].get(device.device_id, f"rfxtrx_{device.device_id}")
-
-
-def get_sensor_name(device, sensor, config):
-    device_prefix = config["sensor_name_map"].get(device.device_id, f"rfxtrx_{device.device_id}")
-    return f"{device_prefix}_{sensor.sensor_id}"
-
-
-def create_device_config(device, config):
-    device_config = {
-        "name": get_device_name(device, config),
-        "identifiers": [f"rfxtrx2mqtt_{device.device_id}"],
-        "sw_version": f"rfxtrx2mqtt {rfxtrx2mqtt_version}",
-        "model": f"{device.model}",
-        "manufacturer": f"rfxtrx2mqtt",
-    }
-    return device_config
-
-
-def create_sensor_config(device, sensor, config):
-    component = "sensor"
-    sensor_config = {
-        "name": get_sensor_name(device, sensor, config),
-        "state_topic": get_state_topic(component, device.device_id, config),
-        "value_template": f"{{{{ value_json.{sensor.sensor_id} }}}}",
-        "unique_id": f"rfxtrx2mqtt_{device.device_id}_{sensor.sensor_id}",
-        "device": create_device_config(device, config),
-    }
-
-    if sensor.unit_of_measurement:
-        sensor_config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
-
-    # Only temperature and humidity have correct device classes in Home Assistant.
-    if sensor.sensor_type in ("temperature", "humidity"):
-        sensor_config["device_class"] = f"{sensor.sensor_type}"
-
-    return sensor_config
-
-
 def get_sensors(event):
     sensors = {}
     for key in event.values:
@@ -211,17 +178,59 @@ def create_device(event):
     sensors = get_sensors(event)
     device = Device(
         device_id=device_id,
-        rfxtrx_device=event.device,
-        model=event.device.type_string,
+        packettype=event.device.packettype,
+        subtype=event.device.subtype,
+        id_string=event.device.id_string,
+        type_string=event.device.type_string,
         sensors=sensors)
     return device
 
 
-async def publish_discovery(client, device, config):
+def get_device_name(device, config):
+    default = f"{config['homeassistant']['rfxtrx_device_name_prefix']}{device.device_id}"
+    return config["device_name_map"].get(device.device_id, default)
+
+
+def get_sensor_name(device, sensor, config):
+    device_prefix = config["sensor_name_map"].get(device.device_id, f"rfxtrx_{device.device_id}")
+    return f"{device_prefix}_{sensor.sensor_id}"
+
+
+def create_rfxtrx_device_config(device, config):
+    device_config = {
+        "name": get_device_name(device, config),
+        "identifiers": [f"{config['homeassistant']['rfxtrx_device_id_prefix']}{device.device_id}"],
+        "manufacturer": f"{device.type_string}",
+        "via_device": f"{config['homeassistant']['rfxtrx2mqtt_device_id']}",
+    }
+    return device_config
+
+
+def create_rfxtrx_sensor_config(device, sensor, config):
+    component = "sensor"
+    sensor_config = {
+        "name": get_sensor_name(device, sensor, config),
+        "unique_id": f"{config['homeassistant']['rfxtrx_device_id_prefix']}{device.device_id}_{sensor.sensor_id}",
+        "state_topic": get_state_topic(component, device.device_id, config),
+        "value_template": f"{{{{ value_json.{sensor.sensor_id} }}}}",
+        "device": create_rfxtrx_device_config(device, config),
+    }
+
+    if sensor.unit_of_measurement:
+        sensor_config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
+
+    # Only temperature and humidity have correct device classes in Home Assistant.
+    if sensor.sensor_type in ("temperature", "humidity"):
+        sensor_config["device_class"] = f"{sensor.sensor_type}"
+
+    return sensor_config
+
+
+async def publish_rfxtrx_discovery(client, device, config):
     component = "sensor"
     for sensor_id, sensor in device.sensors.items():
         topic = get_discovery_topic(component, device.device_id, sensor_id, config)
-        sensor_config = create_sensor_config(device, sensor, config)
+        sensor_config = create_rfxtrx_sensor_config(device, sensor, config)
         log.debug(f"Publishing discovery config '{sensor_config}' for device '{device.device_id}' on topic '{topic}'")
         msg = json.dumps(sensor_config)
         # (retain and qos=0 is what zigbee2mqtt does)
@@ -231,7 +240,8 @@ async def publish_discovery(client, device, config):
         # don't want to use later, but those will be retained
         # anyway. (I think that restarting the MQTT broker will drop
         # the retained messages.)
-        await client.publish(topic, msg.encode("utf-8"), retain=True, qos=QOS_0)
+        retain = False
+        await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
 
 
 def event_values_to_state(values):
@@ -244,7 +254,7 @@ def event_values_to_state(values):
     return state
 
 
-async def publish_state(client, device_id, event, config):
+async def publish_rfxtrx_state(client, device_id, event, config):
     component = "sensor"
     topic = get_state_topic(component, device_id, config)
     state = event_values_to_state(event.values)
@@ -272,10 +282,10 @@ async def handle_event(event, mqtt_client, config):
 
         log.info(f"Event: Device with ID '{device.device_id}' (whitelisted: {is_whitelisted}) sent sensor values: {event.values}")
         if device.device_id not in seen_devices:
-            log.info(f"Found new device: Device ID: {device.device_id}, packettype '{device.rfxtrx_device.packettype:02x}', subtype: '{device.rfxtrx_device.subtype:02x}', id_string: '{device.rfxtrx_device.id_string}', type_string: '{device.rfxtrx_device.type_string}', whitelisted: {is_whitelisted}")
+            log.info(f"Found new device: Device ID: {device.device_id}, packettype '{device.packettype:02x}', subtype: '{device.subtype:02x}', id_string: '{device.id_string}', type_string: '{device.type_string}', whitelisted: {is_whitelisted}")
             seen_devices[device.device_id] = device
             if is_whitelisted:
-                await publish_discovery(mqtt_client, device, config)
+                await publish_rfxtrx_discovery(mqtt_client, device, config)
             else:
                 log.debug(f"Device ID {device.device_id} not whitelisted, not publishing discovery config")
 
@@ -285,14 +295,62 @@ async def handle_event(event, mqtt_client, config):
         # Whitelist is not enabled if it's empty
         if is_whitelisted:
             state = event_values_to_state(event.values)
-            await publish_state(mqtt_client, device.device_id, event, config)
+            await publish_rfxtrx_state(mqtt_client, device.device_id, event, config)
         else:
             log.debug(f"Device ID {device.device_id} not whitelisted, not publishing event state")
     except Exception:
         log.exception("Exception in handle_event")
 
 
-def log_seen_devices(config):
+async def publish_rfxtrx2mqtt_discovery(client, config):
+    """Publish MQTT discovery config about rfxtrx2mqtt's (this program's)
+    own sensors.
+
+    """
+    component = "sensor"
+    device_id = f"{config['homeassistant']['rfxtrx2mqtt_device_id']}"
+    sensor_ids = ["version", "seen_devices_count"]
+    for sensor_id in sensor_ids:
+        topic = get_discovery_topic(component, device_id, sensor_id, config)
+        discovery_config = {
+            "name": f"{device_id}_{sensor_id}",
+            "unique_id": f"{device_id}_{sensor_id}",
+            "state_topic": get_state_topic(component, device_id, config),
+            "value_template": f"{{{{ value_json.{sensor_id} }}}}",
+            "device": {
+                "name": f"{device_id}",
+                "identifiers": [f"{device_id}"],
+                "sw_version": f"rfxtrx2mqtt {rfxtrx2mqtt_version}",
+                "manufacturer": "rfxtrx2mqtt",
+            }
+        }
+        log.debug(f"Publishing discovery config '{discovery_config}' for device '{device_id}' on topic '{topic}'")
+        msg = json.dumps(discovery_config)
+        # (retain and qos=0 is what zigbee2mqtt does)
+        #
+        # FIXME: The downside is that when experimenting with the
+        # setup, rfxtrx2mqtt might send discovery configs that you
+        # don't want to use later, but those will be retained
+        # anyway. (I think that restarting the MQTT broker will drop
+        # the retained messages.)
+        retain = False
+        await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
+
+
+async def publish_rfxtrx2mqtt_state(client, config):
+    component = "sensor"
+    device_id = f"{config['homeassistant']['rfxtrx2mqtt_device_id']}"
+    topic = get_state_topic(component, device_id, config)
+    state = {
+        "version": rfxtrx2mqtt_version,
+        "seen_devices_count": len(seen_devices),
+    }
+    log.debug(f"Publishing state '{state}' for device_id '{device_id}' on topic '{topic}'")
+    msg = json.dumps(state)
+    await client.publish(topic, msg.encode("utf-8"))
+
+
+def log_seen_rfxtrx_devices(config):
     whitelisted_device_ids = [ w["device_id"] for w in config["whitelist"] ]
 
     log.info(f"Seen devices ({len(seen_devices)})")
@@ -304,10 +362,10 @@ def log_seen_devices(config):
         else:
             is_whitelisted = False
         log.info(f" * Device ID: {device.device_id}\n"
-                 f"   packettype: {device.rfxtrx_device.packettype:02x}\n"
-                 f"   subtype: {device.rfxtrx_device.subtype:02x}\n"
-                 f"   id_string: {device.rfxtrx_device.id_string}\n"
-                 f"   type_string: {device.rfxtrx_device.type_string}\n"
+                 f"   packettype: {device.packettype:02x}\n"
+                 f"   subtype: {device.subtype:02x}\n"
+                 f"   id_string: {device.id_string}\n"
+                 f"   type_string: {device.type_string}\n"
                  f"   last values: {seen_devices_last_values[device.device_id]}\n"
                  f"   whitelisted: {is_whitelisted}\n"
                  f"   last seen: {datetime.datetime.utcfromtimestamp(seen_devices_last_timestamp[device.device_id]).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -366,9 +424,12 @@ async def run(args):
     rfxtrx_conn = await loop.run_in_executor(
         None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
 
+    await publish_rfxtrx2mqtt_discovery(mqtt_client, config)
+
     try:
         while True:
-            log_seen_devices(config)
+            log_seen_rfxtrx_devices(config)
+            await publish_rfxtrx2mqtt_state(mqtt_client, config)
             await asyncio.sleep(60.0)
     except asyncio.CancelledError:
         pass
@@ -434,9 +495,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--config-file", help="Config file")
-
-    parser.add_argument("--rfxtrx-device", help="RFXtrx device")
-
+    parser.add_argument("--rfxtrx-device", help="RFXtrx USB device (example: /dev/tty.usbserial-A11Q57E2)")
     args = parser.parse_args()
     return args
 
