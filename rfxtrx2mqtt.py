@@ -386,14 +386,18 @@ async def shutdown(signal, loop):
 
 
 def setup_rfxtrx(config, loop, mqtt_client, debug):
-    rfxtrx_device = config["rfxtrx"]["device"]
-
     def rfxtrx_event_callback(event):
         asyncio.run_coroutine_threadsafe(handle_event(event, mqtt_client, config), loop)
 
-    log.info(f"Using RFXtrx device '{rfxtrx_device}'")
-    rfxtrx_conn = RFXtrx.Connect(rfxtrx_device, rfxtrx_event_callback, debug=debug)
-    return rfxtrx_conn
+    try:
+        rfxtrx_device = config["rfxtrx"]["device"]
+        log.info(f"Using RFXtrx device '{rfxtrx_device}'")
+        # RFXtrx.Connect starts and runs its own thread
+        rfxtrx_conn = RFXtrx.Connect(rfxtrx_device, rfxtrx_event_callback, debug=debug)
+        return rfxtrx_conn
+    except Exception:
+        log.exception("Failed to setup RFXtrx device")
+        sys.exit(2)
 
 
 def shutdown_rfxtrx(rfxtrx_conn):
@@ -411,6 +415,10 @@ async def run(args):
         sys.exit(1)
 
     loop = asyncio.get_running_loop()
+
+    rfxtrx_conn = await loop.run_in_executor(
+        None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
+
     try:
         mqtt_client = MQTTClient(client_id=config["mqtt"]["client_id"])
         ret = await mqtt_client.connect(
@@ -420,9 +428,6 @@ async def run(args):
         log.error("Connection failed: %s" % ce)
         # todo: do what?
         sys.exit(1)
-
-    rfxtrx_conn = await loop.run_in_executor(
-        None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
 
     await publish_rfxtrx2mqtt_discovery(mqtt_client, config)
 
