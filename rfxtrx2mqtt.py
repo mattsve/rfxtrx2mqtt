@@ -240,7 +240,7 @@ async def publish_rfxtrx_discovery(client, device, config):
         # don't want to use later, but those will be retained
         # anyway. (I think that restarting the MQTT broker will drop
         # the retained messages.)
-        retain = False
+        retain = True
         await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
 
 
@@ -333,7 +333,7 @@ async def publish_rfxtrx2mqtt_discovery(client, config):
         # don't want to use later, but those will be retained
         # anyway. (I think that restarting the MQTT broker will drop
         # the retained messages.)
-        retain = False
+        retain = True
         await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
 
 
