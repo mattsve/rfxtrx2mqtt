@@ -416,11 +416,8 @@ async def run(args):
 
     loop = asyncio.get_running_loop()
 
-    mqtt_client = MQTTClient(client_id=config["mqtt"]["client_id"])
-    rfxtrx_conn = await loop.run_in_executor(
-        None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
-
     try:
+        mqtt_client = MQTTClient(client_id=config["mqtt"]["client_id"])
         ret = await mqtt_client.connect(
             f"mqtt://{config['mqtt']['broker_host']}:{config['mqtt']['broker_port']}/",
             cleansession=True)
@@ -430,6 +427,9 @@ async def run(args):
         sys.exit(1)
 
     await publish_rfxtrx2mqtt_discovery(mqtt_client, config)
+
+    rfxtrx_conn = await loop.run_in_executor(
+        None, setup_rfxtrx, config, loop, mqtt_client, args.debug)
 
     try:
         while True:
