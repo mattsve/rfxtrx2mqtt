@@ -126,7 +126,10 @@ sensor_type_to_unit_of_measurement_map = {
 }
 
 # Sensor type to Home Assistant device class (only some sensor types
-# have a defined device class).
+# have a defined device class). HA does not have a "battery numeric"
+# or "rssi numeric" device class.
+#
+# https://developers.home-assistant.io/docs/en/entity_sensor.html
 sensor_type_to_device_class_map = {
     SENSOR_TYPE_TEMPERATURE: "temperature",
     SENSOR_TYPE_HUMIDITY: "humidity",
@@ -209,13 +212,6 @@ class Sensor:
     def __init__(self, *, sensor_id, sensor_type):
         # The sensor id is relative to the device
         self.sensor_id = sensor_id
-
-        # https://developers.home-assistant.io/docs/en/entity_sensor.html
-        # device_class is derived from sensor_type, but not all
-        # sensor_type:s are valid device_classes (HA does not have a
-        # "battery numeric" or "rssi numeric" device class.
-        assert sensor_type in event_value_key_to_sensor_type_map.values()
-
         self.sensor_type = sensor_type
         self.unit_of_measurement = sensor_type_to_unit_of_measurement_map[sensor_type]
 
@@ -224,7 +220,12 @@ def get_sensors(event, config):
     sensors = {}
     for key in event.values:
         if key not in event_value_key_to_sensor_id_map:
+            log.debug(f"No sensor ID for event value key: {key}")
             continue
+        if key not in event_value_key_to_sensor_type_map:
+            log.debug(f"No sensor type for event value key: {key}")
+            continue
+
         sensor_id = event_value_key_to_sensor_id_map[key]
         sensors[sensor_id] = Sensor(
             sensor_id=sensor_id,
@@ -241,6 +242,28 @@ def get_sensors(event, config):
                 sensor_type=SENSOR_TYPE_SIGNAL_STRENGTH)
 
     return sensors
+
+
+def event_values_to_state(values, config):
+    state = {}
+    for key in values:
+        if key not in event_value_key_to_sensor_id_map:
+            log.debug(f"No sensor ID for event value key: {key}")
+            continue
+        if key not in event_value_key_to_sensor_type_map:
+            log.debug(f"No sensor type for event value key: {key}")
+            continue
+
+        sensor_id = event_value_key_to_sensor_id_map[key]
+        state[sensor_id] = values[key]
+
+        if key == EVENT_KEY_BATTERY_NUMERIC and config['emulated_battery_level_sensor_enabled']:
+            state[SENSOR_ID_BATTERY_LEVEL] = battery_numeric_to_battery_level(values[key])
+
+        if key == EVENT_KEY_RSSI_NUMERIC and config['emulated_signal_strength_sensor_enabled']:
+            state[SENSOR_ID_SIGNAL_STRENGTH] = rssi_numeric_to_signal_strength(values[key])
+
+    return state
 
 
 def create_device(event, config):
@@ -312,23 +335,6 @@ async def publish_rfxtrx_discovery(client, device, config):
         # the retained messages.)
         retain = True
         await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
-
-
-def event_values_to_state(values, config):
-    state = {}
-    for key in values:
-        if key not in event_value_key_to_sensor_id_map:
-            continue
-        sensor_id = event_value_key_to_sensor_id_map[key]
-        state[sensor_id] = values[key]
-
-        if key == EVENT_KEY_BATTERY_NUMERIC and config['emulated_battery_level_sensor_enabled']:
-            state[SENSOR_ID_BATTERY_LEVEL] = battery_numeric_to_battery_level(values[key])
-
-        if key == EVENT_KEY_RSSI_NUMERIC and config['emulated_signal_strength_sensor_enabled']:
-            state[SENSOR_ID_SIGNAL_STRENGTH] = rssi_numeric_to_signal_strength(values[key])
-
-    return state
 
 
 async def publish_rfxtrx_state(client, device_id, event, config):
