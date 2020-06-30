@@ -118,20 +118,20 @@ event_value_key_to_sensor_type_map = {
 
 sensor_type_to_unit_of_measurement_map = {
     SENSOR_TYPE_TEMPERATURE: "°C",
-    SENSOR_TYPE_HUMIDITY = "%",
-    SENSOR_TYPE_BATTERY_NUMERIC = None,
-    SENSOR_TYPE_RSSI_NUMERIC = None,
-    SENSOR_TYPE_BATTERY_LEVEL = "%",
-    SENSOR_TYPE_SIGNAL_STRENGTH = "%",
+    SENSOR_TYPE_HUMIDITY: "%",
+    SENSOR_TYPE_BATTERY_NUMERIC: None,
+    SENSOR_TYPE_RSSI_NUMERIC: None,
+    SENSOR_TYPE_BATTERY_LEVEL: "%",
+    SENSOR_TYPE_SIGNAL_STRENGTH: "%",
 }
 
 # Sensor type to Home Assistant device class (only some sensor types
 # have a defined device class).
 sensor_type_to_device_class_map = {
-    SENSOR_TYPE_TEMPERATURE = "temperature",
-    SENSOR_TYPE_HUMIDITY = "humidity",
-    SENSOR_TYPE_BATTERY_LEVEL = "battery",
-    SENSOR_TYPE_SIGNAL_STRENGTH = "signal_strength",
+    SENSOR_TYPE_TEMPERATURE: "temperature",
+    SENSOR_TYPE_HUMIDITY: "humidity",
+    SENSOR_TYPE_BATTERY_LEVEL: "battery",
+    SENSOR_TYPE_SIGNAL_STRENGTH: "signal_strength",
 }
 
 
