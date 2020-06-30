@@ -546,18 +546,14 @@ def deep_dict_merge(dct1, dct2, override=True) -> dict:
 
 def read_config(args):
     config = {}
-    print("config 1: ", config)
     config = deep_dict_merge(config, DEFAULT_CONFIG)
-    print("config 2: ", config)
 
     if args.config_file:
         with open(args.config_file) as f:
             file_config = yaml.safe_load(f)
             config = deep_dict_merge(config, file_config)
-            print("config 3: ", config)
 
     config = deep_dict_merge(config, args_to_config(args))
-    print("config 4: ", config)
 
     # Important: All possible options must be expressed in the default
     # config dict, as usage of the config dict assumes the keys
