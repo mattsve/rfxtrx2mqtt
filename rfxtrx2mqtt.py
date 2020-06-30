@@ -61,25 +61,92 @@ DEFAULT_CONFIG = {
         # Example:
         #
         #   "5002_6501": "outdoor_north",
-    }
+    },
+
+    "emulated_battery_level_sensor_enabled": True,
+    "emulated_signal_strength_sensor_enabled": True,
 }
 
 
+# RFXtrx event value keys
+EVENT_KEY_TEMPERATURE = "Temperature"
+EVENT_KEY_TEMPERATURE_2 = "Temperature2"
+EVENT_KEY_HUMIDITY = "Humidity"
+EVENT_KEY_BATTERY_NUMERIC = "Battery numeric"
+EVENT_KEY_RSSI_NUMERIC = "Rssi numeric"
+
+
+# Sensor IDs - Unique identifiers for the different sensors
+# (also used in Home Assitant entities)
+SENSOR_ID_TEMPERATURE = "temperature"
+SENSOR_ID_TEMPERATURE_2 = "temperature_2"
+SENSOR_ID_HUMIDITY = "humidity"
+SENSOR_ID_BATTERY_NUMERIC = "battery_numeric"
+SENSOR_ID_RSSI_NUMERIC = "rssi_numeric"
+SENSOR_ID_BATTERY_LEVEL = "battery_level"
+SENSOR_ID_SIGNAL_STRENGTH = "signal_strength"
+
+
+# Sensor types (also used as Home Assistant device class)
+SENSOR_TYPE_TEMPERATURE = "temperature"
+SENSOR_TYPE_HUMIDITY = "humidity"
+SENSOR_TYPE_BATTERY_NUMERIC = "battery_numeric"
+SENSOR_TYPE_RSSI_NUMERIC = "rssi_numeric"
+SENSOR_TYPE_BATTERY_LEVEL = "battery_level"
+SENSOR_TYPE_SIGNAL_STRENGTH = "signal_strength"
+
+
+# Values (the sensor IDs) must be unique.
 event_value_key_to_sensor_id_map = {
-    "Temperature": "temperature",
-    "Temperature2": "temperature_2",
-    "Humidity": "humidity",
-    "Battery numeric": "battery",
-    "Rssi numeric": "rssi",
+    EVENT_KEY_TEMPERATURE: SENSOR_ID_TEMPERATURE,
+    EVENT_KEY_TEMPERATURE_2: SENSOR_ID_TEMPERATURE_2,
+    EVENT_KEY_HUMIDITY: SENSOR_ID_HUMIDITY,
+    EVENT_KEY_BATTERY_NUMERIC: SENSOR_ID_BATTERY_NUMERIC,
+    EVENT_KEY_RSSI_NUMERIC: SENSOR_ID_RSSI_NUMERIC,
 }
 
+
+# sensor_type is also used as Home Assistant device class
 event_value_key_to_sensor_type_map = {
-    "Temperature": "temperature",
-    "Temperature2": "temperature",
-    "Humidity": "humidity",
-    "Battery numeric": "battery_numeric",
-    "Rssi numeric": "rssi_numeric",
+    EVENT_KEY_TEMPERATURE: SENSOR_TYPE_TEMPERATURE,
+    EVENT_KEY_TEMPERATURE2: SENSOR_TYPE_TEMPERATURE,
+    EVENT_KEY_HUMIDITY: SENSOR_TYPE_HUMIDITY,
+    EVENT_KEY_BATTERY_NUMERIC: SENSOR_TYPE_BATTERY_NUMERIC,
+    EVENT_KEY_RSSI_NUMERIC: SENSOR_TYPE_RSSI_NUMERIC,
 }
+
+
+sensor_type_to_unit_of_measurement_map = {
+    SENSOR_TYPE_TEMPERATURE: "°C",
+    SENSOR_TYPE_HUMIDITY = "%",
+    SENSOR_TYPE_BATTERY_NUMERIC = None,
+    SENSOR_TYPE_RSSI_NUMERIC = None,
+    SENSOR_TYPE_BATTERY_LEVEL = "%",
+    SENSOR_TYPE_SIGNAL_STRENGTH = "%",
+}
+
+# Sensor type to Home Assistant device class (only some sensor types
+# have a defined device class).
+sensor_type_to_device_class_map = {
+    SENSOR_TYPE_TEMPERATURE = "temperature",
+    SENSOR_TYPE_HUMIDITY = "humidity",
+    SENSOR_TYPE_BATTERY_LEVEL = "battery",
+    SENSOR_TYPE_SIGNAL_STRENGTH = "signal_strength",
+}
+
+
+def battery_numeric_to_battery_level(value):
+    # TODO
+    if value == 9:
+        return 100
+    else:
+        return 0
+
+
+def rssi_numeric_to_signal_strength(value):
+    # TODO
+    max = 10
+    return (value / max) * 100
 
 
 def get_discovery_topic(component, device_id, sensor_id, config):
@@ -139,7 +206,7 @@ class Device:
 
 
 class Sensor:
-    def __init__(self, *, sensor_id, sensor_type, event_value_key):
+    def __init__(self, *, sensor_id, sensor_type):
         # The sensor id is relative to the device
         self.sensor_id = sensor_id
 
@@ -150,17 +217,10 @@ class Sensor:
         assert sensor_type in event_value_key_to_sensor_type_map.values()
 
         self.sensor_type = sensor_type
-        if sensor_type == "temperature":
-            self.unit_of_measurement = "°C"
-        elif sensor_type == "humidity":
-            self.unit_of_measurement = "%"
-        elif sensor_type == "battery_numeric":
-            self.unit_of_measurement = None
-        elif sensor_type == "rssi_numeric":
-            self.unit_of_measurement = None
+        self.unit_of_measurement = sensor_type_to_unit_of_measurement_map[sensor_type]
 
 
-def get_sensors(event):
+def get_sensors(event, config):
     sensors = {}
     for key in event.values:
         if key not in event_value_key_to_sensor_id_map:
@@ -168,14 +228,24 @@ def get_sensors(event):
         sensor_id = event_value_key_to_sensor_id_map[key]
         sensors[sensor_id] = Sensor(
             sensor_id=sensor_id,
-            sensor_type=event_value_key_to_sensor_type_map[key],
-            event_value_key=key)
+            sensor_type=event_value_key_to_sensor_type_map[key])
+
+        if key == EVENT_KEY_BATTERY_NUMERIC and config['emulated_battery_level_sensor_enabled']:
+            sensors[SENSOR_ID_BATTERY_LEVEL] = Sensor(
+                sensor_id=SENSOR_ID_BATTERY_LEVEL,
+                sensor_type=SENSOR_TYPE_BATTERY_LEVEL)
+
+        if key == EVENT_KEY_RSSI_NUMERIC and config['emulated_signal_strength_sensor_enabled']:
+            sensors[SENSOR_ID_SIGNAL_STRENGTH] = Sensor(
+                sensor_id=SENSOR_ID_SIGNAL_STRENGTH,
+                sensor_type=SENSOR_TYPE_SIGNAL_STRENGTH)
+
     return sensors
 
 
-def create_device(event):
+def create_device(event, config):
     device_id = create_device_id(event.device)
-    sensors = get_sensors(event)
+    sensors = get_sensors(event, config)
     device = Device(
         device_id=device_id,
         packettype=event.device.packettype,
@@ -217,11 +287,11 @@ def create_rfxtrx_sensor_config(device, sensor, config):
     }
 
     if sensor.unit_of_measurement:
-        sensor_config["unit_of_measurement"] = f"{sensor.unit_of_measurement}"
+        sensor_config["unit_of_measurement"] = sensor.unit_of_measurement
 
-    # Only temperature and humidity have correct device classes in Home Assistant.
-    if sensor.sensor_type in ("temperature", "humidity"):
-        sensor_config["device_class"] = f"{sensor.sensor_type}"
+    # Only some sensor types have correct device classes in Home Assistant.
+    if sensor.sensor_type in sensor_type_to_device_class_map:
+        sensor_config["device_class"] = sensor_type_to_device_class_map[sensor.sensor_type]
 
     return sensor_config
 
@@ -244,20 +314,27 @@ async def publish_rfxtrx_discovery(client, device, config):
         await client.publish(topic, msg.encode("utf-8"), retain=retain, qos=QOS_0)
 
 
-def event_values_to_state(values):
+def event_values_to_state(values, config):
     state = {}
     for key in values:
         if key not in event_value_key_to_sensor_id_map:
             continue
         sensor_id = event_value_key_to_sensor_id_map[key]
         state[sensor_id] = values[key]
+
+        if key == EVENT_KEY_BATTERY_NUMERIC and config['emulated_battery_level_sensor_enabled']:
+            state[SENSOR_ID_BATTERY_LEVEL] = battery_numeric_to_battery_level(values[key])
+
+        if key == EVENT_KEY_RSSI_NUMERIC and config['emulated_signal_strength_sensor_enabled']:
+            state[SENSOR_ID_SIGNAL_STRENGTH] = rssi_numeric_to_signal_strength(values[key])
+
     return state
 
 
 async def publish_rfxtrx_state(client, device_id, event, config):
     component = "sensor"
     topic = get_state_topic(component, device_id, config)
-    state = event_values_to_state(event.values)
+    state = event_values_to_state(event.values, config)
     log.debug(f"Publishing state '{state}' for device_id '{device_id}' on topic '{topic}'")
     msg = json.dumps(state)
     await client.publish(topic, msg.encode("utf-8"))
@@ -270,7 +347,7 @@ async def handle_event(event, mqtt_client, config):
             log.info(f"Ignoring event, not a sensor event! Event: {event}")
             return
 
-        device = create_device(event)
+        device = create_device(event, config)
 
         whitelisted_device_ids = [ w["device_id"] for w in config["whitelist"] ]
         if not config["whitelist"]:
@@ -294,7 +371,7 @@ async def handle_event(event, mqtt_client, config):
 
         # Whitelist is not enabled if it's empty
         if is_whitelisted:
-            state = event_values_to_state(event.values)
+            state = event_values_to_state(event.values, config)
             await publish_rfxtrx_state(mqtt_client, device.device_id, event, config)
         else:
             log.debug(f"Device ID {device.device_id} not whitelisted, not publishing event state")
