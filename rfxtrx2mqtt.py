@@ -63,8 +63,8 @@ DEFAULT_CONFIG = {
         #   "5002_6501": "outdoor_north",
     },
 
-    "emulated_battery_level_sensor_enabled": True,
-    "emulated_signal_strength_sensor_enabled": True,
+    "emulated_battery_level_sensor_enabled": False,
+    "emulated_signal_strength_sensor_enabled": False,
 }
 
 
