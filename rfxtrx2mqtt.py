@@ -81,8 +81,8 @@ EVENT_KEY_RSSI_NUMERIC = "Rssi numeric"
 SENSOR_ID_TEMPERATURE = "temperature"
 SENSOR_ID_TEMPERATURE_2 = "temperature_2"
 SENSOR_ID_HUMIDITY = "humidity"
-SENSOR_ID_BATTERY_NUMERIC = "battery_numeric"
-SENSOR_ID_RSSI_NUMERIC = "rssi_numeric"
+SENSOR_ID_BATTERY_NUMERIC = "battery"
+SENSOR_ID_RSSI_NUMERIC = "rssi"
 SENSOR_ID_BATTERY_LEVEL = "battery_level"
 SENSOR_ID_SIGNAL_STRENGTH = "signal_strength"
 
@@ -126,8 +126,8 @@ sensor_type_to_unit_of_measurement_map = {
 }
 
 # Sensor type to Home Assistant device class (only some sensor types
-# have a defined device class). HA does not have a "battery numeric"
-# or "rssi numeric" device class.
+# have a defined device class). HA does not have device classes for
+# "battery numeric" or "rssi numeric".
 #
 # https://developers.home-assistant.io/docs/en/entity_sensor.html
 sensor_type_to_device_class_map = {
