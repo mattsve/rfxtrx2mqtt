@@ -138,18 +138,19 @@ sensor_type_to_device_class_map = {
 }
 
 
+# It's not actually possible to get a realistic percentage, but it's
+# more convenient to use Home Assistant built-in representation of
+# device battery level.
 def battery_numeric_to_battery_level(value):
-    # TODO
-    if value == 9:
-        return 100
-    else:
-        return 0
+    max_value = 9
+    return int((value / max_value) * 100)
 
 
+# RSSI is not actually signal strength, but it's convenient to see
+# this as a signal strength percentage value.
 def rssi_numeric_to_signal_strength(value):
-    # TODO
-    max = 10
-    return (value / max) * 100
+    max_value = 10
+    return int((value / max_value) * 100)
 
 
 def get_discovery_topic(component, device_id, sensor_id, config):
