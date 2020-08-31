@@ -1,13 +1,12 @@
-FROM balenalib/armv7hf-debian-python:3.7.4-stretch-run
+FROM python:3.8.5-alpine
 
 WORKDIR /
-
 RUN mkdir /rfxtrx2mqtt
-COPY * /rfxtrx2mqtt/
 
-RUN mkdir /venv
-RUN python3 -m venv /venv
-RUN /venv/bin/pip install --upgrade pip
-RUN /venv/bin/pip install -r /rfxtrx2mqtt/requirements.txt
+WORKDIR /rfxtrx2mqtt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENTRYPOINT [ "/venv/bin/python3", "-u", "/rfxtrx2mqtt/rfxtrx2mqtt.py" ]
+COPY . .
+
+ENTRYPOINT [ "python", "./rfxtrx2mqtt.py" ]
