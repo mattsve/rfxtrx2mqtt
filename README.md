@@ -1,5 +1,7 @@
 # rfxtrx2mqtt
 
+![Docker](https://github.com/mattsve/rfxtrx2mqtt/workflows/Docker/badge.svg)
+
 rfxtrx2mqtt is a program for sending sensor events from an RFXtrx
 (http://www.rfxcom.com/) device to Home Assistant via MQTT. Supports
 Home Assistant's MQTT discovery to automatically add devices and
